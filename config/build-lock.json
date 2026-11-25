@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "upstream": {
+    "repository": "https://github.com/rustdesk/rustdesk",
+    "ref": "master",
+    "tag": null,
+    "commit": "a3b42dfb90dc4742dfdf69b4281c1a73118eb8c0",
+    "commitDate": "2026-11-20T13:06:14+08:00",
+    "reason": "Owner decision 2026-11-23: build from this master commit instead of a release tag. Re-pin only through a reviewed update (plan 25.7)."
+  },
+  "submodules": {
+    "libs/hbb_common": "fae47e024dd83cef6aaecde0aa7d11731df11649"
+  },
+  "product": {
+    "displayName": "Remote Hub",
+    "appName": "RemoteHub",
+    "macosBundleId": "app.personal.remotehub",
+    "androidApplicationId": "app.personal.remotehub",
+    "cargoFeature": "remote_hub",
+    "dartDefine": "REMOTE_HUB=true"
+  },
+  "targets": {
+    "macos-arm64": {
+      "rust": "1.81",
+      "flutter": "3.44.9",
+      "flutterSourcePatch": ".github/patches/apply_flutter_3.44_source_patches.sh",
+      "xcode": "27.0 (27A266a)",
+      "deploymentTarget": "12.3",
+      "vcpkgTriplet": "arm64-osx",
+      "cargoFeatures": "flutter,hwcodec,unix-file-copy-paste,screencapturekit,remote_hub"
+    },
+    "android-arm64": {
+      "rust": "1.75",
+      "flutter": "3.24.5",
+      "jdk": "17",
+      "ndk": "r28c (28.2.13676358)",
+      "cargoNdk": "3.1.2",
+      "compileSdk": 36,
+      "targetSdk": 36,
+      "minSdk": 22,
+      "vcpkgTriplet": "arm64-android",
+      "cargoFeatures": "flutter,hwcodec,remote_hub"
+    },
+    "windows-x64": {
+      "rust": "1.75",
+      "flutter": "3.24.5",
+      "llvm": "15.0.6",
+      "msvc": null,
+      "windowsSdk": null,
+      "vcpkgTriplet": "x64-windows-static",
+      "cargoFeatures": "flutter,hwcodec,remote_hub",
+      "note": "msvc/windowsSdk are recorded from the first successful Windows build; none has run yet."
+    }
+  },
+  "vcpkgCommit": "9e593bb18ea69cc5095e012465dcd675a822ed0d",
+  "vcpkgNote": "Use a separate VCPKG_ROOT (same commit) per target: a manifest-mode install for one triplet removes the other triplet's packages from a shared install root.",
+  "nasm": {
+    "version": "2.16.03",
+    "url": "https://www.nasm.us/pub/nasm/releasebuilds/2.16.03/macosx/nasm-2.16.03-macosx.zip",
+    "sha256": "0d29bcd8a5fc617333f4549c7c1f93d1866a4a0915c40359e0a8585bb1a5aa75"
+  },
+  "bridgeGenerator": {
+    "flutter_rust_bridge_codegen": "1.80.1",
+    "cargoExpand": "1.0.95",
+    "rust": "1.75"
+  },
+  "tlsDependencies": {
+    "rustls": "0.23.28",
+    "tokio-rustls": "0.26.0",
+    "ring": "0.17.14",
+    "webpki-roots": "1.0.12"
+  },
+  "verifiedOn": [
+    {
+      "target": "macos-arm64",
+      "date": "2026-11-24",
+      "host": "macOS 26.6.2 (25G83) arm64, Xcode 27.0 (27A266a)",
+      "result": "tools/build-macos.sh exit 0 from a clean staging tree; built-in tools/verify-release.py PASS",
+      "sha256": {
+        "liblibrustdesk.dylib": "17d78c8af11ba6e02f364095d49f9980dda535d37b63e34abf9250de2c2bcfcd",
+        "Remote Hub": "1861625e49523fe942615731a0a0476938736333a7f3df32099a4d7dfd8a338c",
+        "service": "8b0590089b8e624cdc420aa255c6318ff090cb13c88accca1f2d585faf7622f2"
+      },
+      "note": "Not bit-reproducible: upstream gen_version() embeds BUILD_DATE."
+    },
+    {
+      "target": "android-arm64",
+      "date": "2026-11-24",
+      "host": "macOS 26.6.2 (25G83) arm64, NDK r28c, Rust 1.75, Flutter 3.24.5, JDK 17",
+      "result": "tools/build-android.sh --debug exit 0; built-in tools/verify-release.py apk PASS (10/10)",
+      "sha256": {
+        "RemoteHub-android-arm64-debug.apk": "ba7c55eed9c0ca1fa6b0c47a8fce60a9435315a23c562c2913797f5a03d551b3",
+        "librustdesk.so": "30903a4ffafb1999e2ce75f063a3f9416cdce7bcc4fbea98507844cc60ad02dd"
+      },
+      "note": "Debug APK: release profile without fat LTO, debug-signed. Not bit-reproducible (BUILD_DATE)."
+    }
+  ]
+}

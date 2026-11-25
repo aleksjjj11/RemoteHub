@@ -660,7 +660,31 @@ impl FlutterHandler {
             }
             msg_vec.push(h);
         }
+        #[cfg(feature = "remote_hub")]
+        let msg_vec = Self::remote_hub_with_display_names(msg_vec, displays);
         serde_json::ser::to_string(&msg_vec).unwrap_or("".to_owned())
+    }
+
+    /// Adds the display name the host reports, so the Remote Hub viewer can
+    /// select the device's saved display by name rather than by index. The
+    /// upstream message above stays as it is.
+    #[cfg(feature = "remote_hub")]
+    fn remote_hub_with_display_names(
+        msg_vec: Vec<HashMap<&str, i32>>,
+        displays: &[DisplayInfo],
+    ) -> Vec<serde_json::Value> {
+        msg_vec
+            .into_iter()
+            .zip(displays)
+            .map(|(h, d)| {
+                let mut m: serde_json::Map<String, serde_json::Value> = h
+                    .into_iter()
+                    .map(|(k, v)| (k.to_owned(), v.into()))
+                    .collect();
+                m.insert("name".to_owned(), d.name.clone().into());
+                serde_json::Value::Object(m)
+            })
+            .collect()
     }
 
     pub fn update_use_texture_render(&self) {
@@ -1295,6 +1319,19 @@ pub fn session_add_existed(
     Ok(())
 }
 
+/// Remote Hub opens its viewer without a password and stages it natively
+/// instead, so it never appears in window arguments. Any staged password of
+/// `id` is consumed here; an explicit `password` wins.
+#[cfg(feature = "remote_hub")]
+pub(crate) fn remote_hub_session_password(id: &str, password: String) -> String {
+    let staged = crate::remote_hub::take_staged_password(id);
+    if password.is_empty() {
+        staged.unwrap_or_default()
+    } else {
+        password
+    }
+}
+
 /// Create a new remote session with the given id.
 ///
 /// # Arguments
@@ -1345,6 +1382,8 @@ pub fn session_add(
 
     LocalConfig::set_remote_id(&id);
 
+    #[cfg(feature = "remote_hub")]
+    let password = remote_hub_session_password(id, password);
     let mut preset_password = password.clone();
     let shared_password = if is_shared_password {
         // To achieve a flexible password application order, we don't treat shared password as a preset password.
@@ -2425,6 +2464,48 @@ pub(super) mod async_tasks {
         let _res = super::push_global_event(
             super::APP_TYPE_MAIN,
             serde_json::ser::to_string(&data).unwrap_or("".to_owned()),
+        );
+    }
+}
+
+#[cfg(all(test, feature = "remote_hub"))]
+mod remote_hub_tests {
+    use super::*;
+
+    /// The Remote Hub viewer gets each display's name next to the upstream
+    /// fields, which keep their values.
+    #[test]
+    fn displays_msg_keeps_upstream_fields_and_adds_names() {
+        let displays = vec![
+            DisplayInfo {
+                x: 0,
+                y: 0,
+                width: 1920,
+                height: 1080,
+                name: "Built-in".to_owned(),
+                cursor_embedded: true,
+                scale: 2.0,
+                ..Default::default()
+            },
+            DisplayInfo {
+                x: 1920,
+                width: 2560,
+                height: 1440,
+                name: "External".to_owned(),
+                ..Default::default()
+            },
+        ];
+        let msg: Vec<serde_json::Value> =
+            serde_json::from_str(&FlutterHandler::make_displays_msg(&displays)).unwrap();
+        assert_eq!(
+            msg[0],
+            serde_json::json!({"x": 0, "y": 0, "width": 1920, "height": 1080,
+                "cursor_embedded": 1, "scaled_width": 960, "name": "Built-in"})
+        );
+        assert_eq!(
+            msg[1],
+            serde_json::json!({"x": 1920, "y": 0, "width": 2560, "height": 1440,
+                "cursor_embedded": 0, "name": "External"})
         );
     }
 }

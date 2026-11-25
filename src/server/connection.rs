@@ -75,6 +75,8 @@ use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use crate::virtual_display_manager;
 pub type Sender = mpsc::UnboundedSender<(Instant, Arc<Message>)>;
 
+#[cfg(feature = "remote_hub")]
+mod remote_hub_host;
 mod trusted_devices;
 
 const FAILURE_IDX_ID_WHITELIST: usize = 2;
@@ -94,7 +96,12 @@ const MAX_UNAUTHORIZED_CONNS: usize = 64;
 /// against the cheapest flood, one host with one address, not a security boundary: any pool
 /// of addresses passes it, and the bound above is what holds. Meaningful only while the
 /// address is the controller's own, which punch and relay messages carry today.
+#[cfg(not(feature = "remote_hub"))]
 const MAX_UNAUTHORIZED_CONNS_PER_ADDR: usize = 16;
+/// Remote Hub: the only listener is on loopback behind Tailscale Serve, which connects from
+/// 127.0.0.1, so this per-address share is the host's whole unauthenticated session cap.
+#[cfg(feature = "remote_hub")]
+const MAX_UNAUTHORIZED_CONNS_PER_ADDR: usize = ::remote_hub::policy::UNAUTHENTICATED_SESSION_CAP;
 /// The largest message a connection may send before it authorizes. Until then a peer sends only
 /// a public key, a login request, a test delay and a close reason, none of which carries an
 /// unbounded field - a server hands the login request's avatar out as a URL, and only a custom
@@ -165,6 +172,22 @@ impl Drop for UnauthorizedID {
             .unwrap()
             .retain(|(id, _, _)| *id != self.id);
     }
+}
+
+/// The registry is process-global and the harness runs tests in parallel threads, so every
+/// test that admits connections holds this first; a poisoned lock is still a lock.
+#[cfg(test)]
+pub(crate) static UNAUTHORIZED_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// How many unauthorized connections `ip` holds now (Remote Hub tests wait on it).
+#[cfg(all(test, feature = "remote_hub"))]
+pub(crate) fn unauthorized_count_from(ip: IpAddr) -> usize {
+    UNAUTHORIZED_CONNS
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, held, _)| *held == ip)
+        .count()
 }
 
 /// Resolves when the connection holding `unauthorized` is evicted; never once it has
@@ -809,6 +832,8 @@ impl Connection {
                             conn.chat_unanswered = false;
                         }
                         ipc::Data::SwitchPermission{name, enabled} => {
+                            #[cfg(feature = "remote_hub")]
+                            let enabled = remote_hub_host::permission_switch_value(&name, enabled);
                             log::info!("Change permission {} -> {}", name, enabled);
                             // Android broadcasts these to every connection; only remote sessions use them.
                             if (&name == "keyboard" || &name == "clipboard") && !conn.is_remote() {
@@ -1207,6 +1232,11 @@ impl Connection {
                         conn.turn_on_privacy(impl_key).await;
                     }
                     raii::AuthedConnID::check_wake_lock_on_setting_changed();
+                    #[cfg(feature = "remote_hub")]
+                    if conn.remote_hub_access_revoked().await {
+                        conn.on_close("Remote Hub access stopped", true).await;
+                        break;
+                    }
                     if let Some((instant, minute)) = conn.auto_disconnect_timer.as_ref() {
                         if instant.elapsed().as_secs() > minute * 60 {
                             conn.send_close_reason_no_retry("Connection failed due to inactivity").await;
@@ -1939,6 +1969,10 @@ impl Connection {
             return false;
         }
         self.lr.trusted_device_v2_token.clear();
+        #[cfg(feature = "remote_hub")]
+        if !self.remote_hub_claim_controller().await {
+            return false;
+        }
         self.authorized = true;
         self.unauthorized_id = None;
         // One-time means gone once it has let a peer in, not once that peer
@@ -2380,6 +2414,11 @@ impl Connection {
     }
 
     fn clipboard_enabled(&self) -> bool {
+        // Remote Hub v0.1 hosts never share the clipboard, whatever the flags say.
+        #[cfg(feature = "remote_hub")]
+        if !remote_hub_host::permission_switch_value("clipboard", true) {
+            return false;
+        }
         self.clipboard && !self.disable_clipboard
     }
 
@@ -2391,6 +2430,11 @@ impl Connection {
     }
 
     fn audio_enabled(&self) -> bool {
+        // Remote Hub v0.1 hosts never send audio, whatever the flags say.
+        #[cfg(feature = "remote_hub")]
+        if !remote_hub_host::permission_switch_value("audio", true) {
+            return false;
+        }
         self.audio && !self.disable_audio
     }
 
@@ -2698,6 +2742,21 @@ impl Connection {
         false
     }
 
+    /// Whether a login may be authorized by a recent session's stored
+    /// credential instead of the current password. A Remote Hub host checks
+    /// every login against the current permanent password, so rotating it
+    /// revokes every controller that knew the old one.
+    fn recent_session_login_allowed() -> bool {
+        #[cfg(feature = "remote_hub")]
+        {
+            Self::remote_hub_recent_session_login_allowed()
+        }
+        #[cfg(not(feature = "remote_hub"))]
+        {
+            true
+        }
+    }
+
     fn is_recent_session(&mut self, tfa: bool) -> bool {
         SESSIONS
             .lock()
@@ -2929,6 +2988,11 @@ impl Connection {
                 return false;
             }
         }
+        #[cfg(feature = "remote_hub")]
+        let msg = match self.remote_hub_check(msg).await {
+            Ok(msg) => msg,
+            Err(keep_alive) => return keep_alive,
+        };
         if self.authorized {
             if matches!(msg.union.as_ref(), Some(message::Union::LoginRequest(_))) {
                 return true;
@@ -3092,7 +3156,7 @@ impl Connection {
                         .await;
                 }
                 return true;
-            } else if self.is_recent_session(false) {
+            } else if Self::recent_session_login_allowed() && self.is_recent_session(false) {
                 if !self.send_logon_response_and_keep_alive().await {
                     return false;
                 }
@@ -5424,6 +5488,8 @@ impl Connection {
             return;
         }
         self.closed = true;
+        #[cfg(feature = "remote_hub")]
+        self.remote_hub_on_close();
         #[cfg(windows)]
         self.privacy_preparation.take();
         // If voice A,B -> C, and A,B has voice call
@@ -7349,9 +7415,7 @@ mod test {
     #[allow(unused)]
     use super::*;
 
-    // The registry is process-global and the harness runs tests in parallel threads, so every
-    // test that admits connections holds this first; a poisoned lock is still a lock.
-    static UNAUTHORIZED_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    use super::UNAUTHORIZED_TESTS;
 
     fn unauthorized_count() -> usize {
         UNAUTHORIZED_CONNS.lock().unwrap().len()
@@ -7392,6 +7456,26 @@ mod test {
         assert!(!other.is_evicted());
         drop(held);
         assert!(admit_unauthorized(1_000_102, a).is_some());
+    }
+
+    // Review finding: the Remote Hub host let 16 logins from Serve's one loopback address wait
+    // unauthenticated; plan 7.5 caps them at four. The fifth is refused and evicts nobody.
+    #[cfg(feature = "remote_hub")]
+    #[test]
+    fn test_remote_hub_caps_unauthenticated_logins_at_four() {
+        let _serial = UNAUTHORIZED_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        // Not 127.0.0.1, which concurrent Remote Hub tests use for real sessions.
+        let serve: IpAddr = "198.51.100.7".parse().unwrap();
+        let held: Vec<_> = (0..4)
+            .map(|i| admit_unauthorized(1_000_200 + i, serve).expect("one of the first four"))
+            .collect();
+        assert!(
+            admit_unauthorized(1_000_204, serve).is_none(),
+            "a fifth refused"
+        );
+        assert!(held.iter().all(|u| !u.is_evicted()));
+        drop(held);
+        assert!(admit_unauthorized(1_000_205, serve).is_some());
     }
 
     /// A loopback TCP connection as create_tcp_connection sees it, and the controller's end,

@@ -44,6 +44,9 @@ import '../common/widgets/dialog.dart';
 import 'input_model.dart';
 import 'platform_model.dart';
 import 'package:flutter_hbb/utils/scale.dart';
+import 'package:flutter_hbb/remote_hub/remote_hub_build.dart';
+import 'package:flutter_hbb/remote_hub/sessions/reconnect_window.dart';
+import 'package:flutter_hbb/remote_hub/sessions/viewer_preferences.dart';
 
 import 'package:flutter_hbb/generated_bridge.dart'
     if (dart.library.html) 'package:flutter_hbb/web/bridge.dart';
@@ -121,6 +124,7 @@ class FfiModel with ChangeNotifier {
   Timer? _timer;
   Timer? _restartReconnectDelayTimer;
   var _reconnects = 1;
+  final _remoteHubReconnect = ReconnectWindow();
   DateTime? _offlineReconnectStartTime;
   bool _androidDocumentPickerActive = false;
   bool _androidDocumentPickerInterruptedConnection = false;
@@ -1065,6 +1069,15 @@ class FfiModel with ChangeNotifier {
   showMsgBox(SessionID sessionId, String type, String title, String text,
       String link, bool hasRetry, OverlayDialogManager dialogManager,
       {bool? hasCancel}) async {
+    if (kRemoteHub) {
+      final delay =
+          _remoteHubReconnect.delayForMessage(text, hasRetry: hasRetry);
+      if (delay == null) {
+        hasRetry = false;
+      } else {
+        _reconnects = delay;
+      }
+    }
     final noteAllowed = parent.target != null &&
         allowAskForNoteAtEndOfConnection(parent.target, false) &&
         (title == "Connection Error" || type == "restarting");
@@ -1399,7 +1412,10 @@ class FfiModel with ChangeNotifier {
       // 1. User has set the touch mode explicitly.
       // 2. The advanced option (custom client) is set.
       //    Then we choose to use the local option.
-      final optLocal = bind.mainGetLocalOption(key: kOptionTouchMode);
+      // Remote Hub: the device's saved input mode (written to the peer
+      // option before connecting) decides, not a global local option.
+      final optLocal =
+          kRemoteHub ? '' : bind.mainGetLocalOption(key: kOptionTouchMode);
       if (optLocal != '') {
         _touchMode = optLocal == 'Y';
       } else {
@@ -1432,10 +1448,25 @@ class FfiModel with ChangeNotifier {
         // now replaced to _updateCurDisplay
         updateCurDisplay(sessionId);
       }
+      // Remote Hub: until the owner picks a monitor in this session, select
+      // the device's saved display by the name the host reports.
+      int? remoteHubDisplay;
+      if (kRemoteHub && !isCache && lastUserDisplay == null) {
+        final saved = await bind.sessionGetOption(
+                sessionId: sessionId, arg: kRemoteHubOptionDisplay) ??
+            '';
+        final choice = chooseRemoteHubDisplay(
+            [for (final d in newDisplays) d.name], saved);
+        remoteHubDisplay = choice.index;
+        if (choice.missing) {
+          showToast('The saved monitor is not available; '
+              'showing another monitor.');
+        }
+      }
       // After reconnecting, restore the last selected monitor once the canvas is ready.
       // Switching earlier can offset the view if the monitor sizes differ.
       // New monitor windows keep their selection in currentDisplay.
-      final last = lastUserDisplay ?? _pi.currentDisplay;
+      final last = lastUserDisplay ?? remoteHubDisplay ?? _pi.currentDisplay;
       pendingMonitorRestore = (!isCache &&
               last != currentDisplay &&
               bind.sessionGetUseAllMyDisplaysForTheRemoteSession(
@@ -1453,6 +1484,7 @@ class FfiModel with ChangeNotifier {
       }
       if (displays.isNotEmpty) {
         _reconnects = 1;
+        _remoteHubReconnect.reset();
         _offlineReconnectStartTime = null;
         resetRestartReconnectState();
         waitForFirstImage.value = true;
@@ -1632,6 +1664,8 @@ class FfiModel with ChangeNotifier {
     d.width = evt['width'] ?? d.width;
     d.height = evt['height'] ?? d.height;
     d.cursorEmbedded = evt['cursor_embedded'] == 1;
+    final name = evt['name'];
+    d.name = name is String ? name : '';
     d.originalWidth = evt['original_width'] ?? kInvalidResolutionValue;
     d.originalHeight = evt['original_height'] ?? kInvalidResolutionValue;
     d._scale = 1.0;
@@ -4452,6 +4486,8 @@ const kInvalidResolutionValue = -1;
 const kVirtualDisplayResolutionValue = 0;
 
 class Display {
+  /// The name the host reports (Remote Hub builds only), or "".
+  String name = '';
   double x = 0;
   double y = 0;
   int width = 0;

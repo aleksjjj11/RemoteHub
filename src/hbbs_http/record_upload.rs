@@ -21,6 +21,11 @@ lazy_static::lazy_static! {
 }
 
 pub fn is_enable() -> bool {
+    // Recordings are never uploaded to an API server in Remote Hub.
+    #[cfg(feature = "remote_hub")]
+    if crate::remote_hub::is_active() {
+        return false;
+    }
     ENABLE.lock().unwrap().clone()
 }
 

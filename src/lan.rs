@@ -75,6 +75,10 @@ pub(super) fn start_listening() -> ResultType<()> {
 
 #[tokio::main(flavor = "current_thread")]
 pub async fn discover() -> ResultType<()> {
+    #[cfg(feature = "remote_hub")]
+    if crate::remote_hub::is_active() {
+        bail!("{}", crate::remote_hub::NETWORK_DENIED);
+    }
     let sockets = send_query()?;
     let rx = spawn_wait_responses(sockets);
     handle_received_peers(rx).await?;
@@ -84,6 +88,10 @@ pub async fn discover() -> ResultType<()> {
 }
 
 pub fn send_wol(id: String) {
+    #[cfg(feature = "remote_hub")]
+    if crate::remote_hub::is_active() {
+        return;
+    }
     let interfaces = default_net::get_interfaces();
     for peer in &config::LanPeers::load().peers {
         if peer.id == id {

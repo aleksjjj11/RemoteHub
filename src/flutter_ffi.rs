@@ -84,6 +84,9 @@ fn initialize(app_dir: &str, custom_client_config: &str) {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         // core_main's init_log does not work for flutter since it is only applied to its load_library in main.c
+        #[cfg(feature = "remote_hub")]
+        crate::remote_hub::init_log("flutter_ffi");
+        #[cfg(not(feature = "remote_hub"))]
         hbb_common::init_log(false, "flutter_ffi");
     }
 }
@@ -2388,6 +2391,230 @@ pub fn option_synced() -> bool {
 
 pub fn main_is_installed() -> SyncReturn<bool> {
     SyncReturn(is_installed())
+}
+
+pub fn remote_hub_is_build() -> SyncReturn<bool> {
+    SyncReturn(cfg!(feature = "remote_hub"))
+}
+
+/// Registers an owner-approved endpoint under its logical peer id before the
+/// session dials it. Returns "" or a message that starts with an error code.
+pub fn remote_hub_register_device(
+    id: String,
+    tailnet_ipv4: String,
+    tls_server_name: String,
+) -> SyncReturn<String> {
+    #[cfg(feature = "remote_hub")]
+    return SyncReturn(
+        match crate::remote_hub::register_device(&id, &tailnet_ipv4, &tls_server_name) {
+            Ok(()) => String::new(),
+            Err(err) => err.to_string(),
+        },
+    );
+    #[cfg(not(feature = "remote_hub"))]
+    {
+        let _ = (id, tailnet_ipv4, tls_server_name);
+        SyncReturn("NATIVE_LIBRARY_UNAVAILABLE: not a Remote Hub build".to_owned())
+    }
+}
+
+/// The certificate name the live bridge of `id` verified, or "".
+pub fn remote_hub_verified_server_name(id: String) -> SyncReturn<String> {
+    #[cfg(feature = "remote_hub")]
+    return SyncReturn(crate::remote_hub::verified_server_name(&id));
+    #[cfg(not(feature = "remote_hub"))]
+    {
+        let _ = id;
+        SyncReturn(String::new())
+    }
+}
+
+/// True once the host accepted a login of `id` made with exactly `password`
+/// since the device was last registered. The UI saves a typed password only
+/// after this.
+pub fn remote_hub_login_accepted(id: String, password: String) -> SyncReturn<bool> {
+    #[cfg(feature = "remote_hub")]
+    return SyncReturn(crate::remote_hub::login_accepted_with(&id, &password));
+    #[cfg(not(feature = "remote_hub"))]
+    {
+        let _ = (id, password);
+        SyncReturn(false)
+    }
+}
+
+/// True once the host accepted any login of `id` since the device was last
+/// registered, whatever password was used.
+pub fn remote_hub_login_done(id: String) -> SyncReturn<bool> {
+    #[cfg(feature = "remote_hub")]
+    return SyncReturn(crate::remote_hub::login_done(&id));
+    #[cfg(not(feature = "remote_hub"))]
+    {
+        let _ = id;
+        SyncReturn(false)
+    }
+}
+
+/// Deletes the local Remote Hub diagnostic logs. Returns "" or a coded error.
+pub fn remote_hub_delete_logs() -> SyncReturn<String> {
+    #[cfg(feature = "remote_hub")]
+    return SyncReturn(crate::remote_hub::delete_logs());
+    #[cfg(not(feature = "remote_hub"))]
+    SyncReturn("NATIVE_LIBRARY_UNAVAILABLE: not a Remote Hub build".to_owned())
+}
+
+/// Writes the device's saved viewer preferences into the peer settings of
+/// `id` before its viewer opens. Returns "" or a coded error.
+pub fn remote_hub_apply_viewer_preferences(
+    id: String,
+    quality: String,
+    input_mode: String,
+    display_id: String,
+) -> SyncReturn<String> {
+    #[cfg(feature = "remote_hub")]
+    return SyncReturn(
+        match crate::remote_hub::apply_viewer_preferences(&id, &quality, &input_mode, &display_id) {
+            Ok(()) => String::new(),
+            Err(err) => err.to_string(),
+        },
+    );
+    #[cfg(not(feature = "remote_hub"))]
+    {
+        let _ = (id, quality, input_mode, display_id);
+        SyncReturn("NATIVE_LIBRARY_UNAVAILABLE: not a Remote Hub build".to_owned())
+    }
+}
+
+/// How far the newest dial of `id` got: "" (none since the device was
+/// registered for this connect), "securing", "secured" (certificate verified,
+/// engine connected to the bridge) or "failed " and a coded message.
+pub fn remote_hub_dial_stage(id: String) -> SyncReturn<String> {
+    #[cfg(feature = "remote_hub")]
+    return SyncReturn(crate::remote_hub::dial_stage(&id));
+    #[cfg(not(feature = "remote_hub"))]
+    {
+        let _ = id;
+        SyncReturn(String::new())
+    }
+}
+
+/// Hands `password` to the next session of `id` in process memory, so the
+/// viewer opens without it in its window arguments. "" clears it.
+pub fn remote_hub_stage_password(id: String, password: String) -> SyncReturn<()> {
+    #[cfg(feature = "remote_hub")]
+    crate::remote_hub::stage_password(&id, &password);
+    #[cfg(not(feature = "remote_hub"))]
+    let _ = (id, password);
+    SyncReturn(())
+}
+
+/// Host status as JSON for the local host panel.
+pub fn remote_hub_host_status() -> SyncReturn<String> {
+    #[cfg(feature = "remote_hub")]
+    return SyncReturn(crate::remote_hub::host_status_json());
+    #[cfg(not(feature = "remote_hub"))]
+    SyncReturn("{}".to_owned())
+}
+
+/// Stops or allows access on this host and returns only once the host
+/// listener confirmed it (on stop: listener closed, every session ended).
+/// Returns "" or what failed; on failure nothing changed in this process.
+///
+/// Runs on the runtime of the UI's existing IPC status loop; no runtime is
+/// created here. The bridge calls this on a worker thread that may wait.
+pub fn remote_hub_set_host_access(enabled: bool) -> String {
+    #[cfg(all(
+        feature = "remote_hub",
+        not(any(target_os = "android", target_os = "ios"))
+    ))]
+    return match crate::ui_interface::ui_runtime(std::time::Duration::from_secs(5)) {
+        Some(runtime) => {
+            crate::remote_hub::complete_on(&runtime, crate::remote_hub::set_host_access(enabled))
+        }
+        None => Err(hbb_common::anyhow::anyhow!(
+            "the UI IPC runtime is not running"
+        )),
+    }
+    .err()
+    .map_or_else(String::new, |err| err.to_string());
+    #[cfg(all(feature = "remote_hub", any(target_os = "android", target_os = "ios")))]
+    {
+        let _ = enabled;
+        "NATIVE_LIBRARY_UNAVAILABLE: host access is desktop only".to_owned()
+    }
+    #[cfg(not(feature = "remote_hub"))]
+    {
+        let _ = enabled;
+        "NATIVE_LIBRARY_UNAVAILABLE: not a Remote Hub build".to_owned()
+    }
+}
+
+/// Writes host settings (`options_json`: a JSON object of option keys to
+/// values; "" removes a key) to the host service and returns only once the
+/// service read them back unchanged. Returns "" or what failed; unlike
+/// `main_set_option` a failed write is reported, so the host panel never
+/// shows a role or restriction as saved when it was not.
+pub fn remote_hub_set_host_options(options_json: String) -> String {
+    #[cfg(all(
+        feature = "remote_hub",
+        not(any(target_os = "android", target_os = "ios"))
+    ))]
+    {
+        let changes: HashMap<String, String> = match serde_json::from_str(&options_json) {
+            Ok(changes) => changes,
+            Err(e) => return format!("INTERNAL_ERROR: invalid host settings: {e}"),
+        };
+        return match crate::ui_interface::ui_runtime(std::time::Duration::from_secs(5)) {
+            Some(runtime) => crate::remote_hub::complete_on(
+                &runtime,
+                crate::remote_hub::write_host_options(changes),
+            ),
+            None => Err(hbb_common::anyhow::anyhow!(
+                "the UI IPC runtime is not running"
+            )),
+        }
+        .err()
+        .map_or_else(String::new, |err| err.to_string());
+    }
+    #[cfg(all(feature = "remote_hub", any(target_os = "android", target_os = "ios")))]
+    {
+        let _ = options_json;
+        "NATIVE_LIBRARY_UNAVAILABLE: host settings are desktop only".to_owned()
+    }
+    #[cfg(not(feature = "remote_hub"))]
+    {
+        let _ = options_json;
+        "NATIVE_LIBRARY_UNAVAILABLE: not a Remote Hub build".to_owned()
+    }
+}
+
+/// Before showing a host password just set: a lease (> 0), or 0 when access
+/// is on or being allowed, so the password must not be changed or shown.
+/// While a lease is live no window can allow access.
+pub fn remote_hub_begin_password_display() -> SyncReturn<i64> {
+    #[cfg(feature = "remote_hub")]
+    return SyncReturn(crate::remote_hub::begin_password_display());
+    #[cfg(not(feature = "remote_hub"))]
+    SyncReturn(0)
+}
+
+/// Keeps a lease alive. False: the password must leave the screen now.
+pub fn remote_hub_renew_password_display(lease: i64) -> SyncReturn<bool> {
+    #[cfg(feature = "remote_hub")]
+    return SyncReturn(crate::remote_hub::renew_password_display(lease));
+    #[cfg(not(feature = "remote_hub"))]
+    {
+        let _ = lease;
+        SyncReturn(false)
+    }
+}
+
+/// The password left the screen; access may be allowed again.
+pub fn remote_hub_end_password_display(lease: i64) -> SyncReturn<()> {
+    #[cfg(feature = "remote_hub")]
+    crate::remote_hub::end_password_display(lease);
+    #[cfg(not(feature = "remote_hub"))]
+    let _ = lease;
+    SyncReturn(())
 }
 
 pub fn main_init_input_source() -> SyncReturn<()> {

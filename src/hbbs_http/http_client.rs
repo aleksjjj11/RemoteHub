@@ -140,6 +140,8 @@ pub fn create_http_client_with_url(url: &str) -> SyncClient {
 }
 
 pub fn create_http_client_with_url_strict(url: &str) -> ResultType<SyncClient> {
+    #[cfg(feature = "remote_hub")]
+    crate::remote_hub::deny_network()?;
     let parsed_url = url::Url::parse(url)?;
     if parsed_url.scheme() != "https" {
         bail!("Strict HTTP client requires HTTPS: {}", url);
@@ -175,6 +177,11 @@ fn create_http_client_with_url_(
 ) -> SyncClient {
     let mut client = create_http_client(tls_type, danger_accept_invalid_cert.unwrap_or(false));
     if is_tls_type_cached && original_danger_accept_invalid_cert.is_some() {
+        return client;
+    }
+    // The TLS probe is a request to the API server; Remote Hub sends none.
+    #[cfg(feature = "remote_hub")]
+    if crate::remote_hub::deny_network().is_err() {
         return client;
     }
     if let Err(e) = client.head(url).send() {
@@ -276,6 +283,8 @@ pub async fn create_http_client_async_with_url(url: &str) -> AsyncClient {
 }
 
 pub async fn create_http_client_async_with_url_strict(url: &str) -> ResultType<AsyncClient> {
+    #[cfg(feature = "remote_hub")]
+    crate::remote_hub::deny_network()?;
     let parsed_url = url::Url::parse(url)?;
     if parsed_url.scheme() != "https" {
         bail!("Strict HTTP client requires HTTPS: {}", url);
@@ -314,6 +323,10 @@ async fn create_http_client_async_with_url_(
     let mut client =
         create_http_client_async(tls_type, danger_accept_invalid_cert.unwrap_or(false));
     if is_tls_type_cached && original_danger_accept_invalid_cert.is_some() {
+        return client;
+    }
+    #[cfg(feature = "remote_hub")]
+    if crate::remote_hub::deny_network().is_err() {
         return client;
     }
     if let Err(e) = client.head(url).send().await {

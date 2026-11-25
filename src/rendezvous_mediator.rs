@@ -310,6 +310,10 @@ impl RendezvousMediator {
     }
 
     pub async fn start_all() {
+        #[cfg(feature = "remote_hub")]
+        if crate::remote_hub::is_active() {
+            return crate::remote_hub::start_all().await;
+        }
         crate::test_nat_type();
         if config::is_outgoing_only() {
             loop {

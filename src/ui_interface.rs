@@ -1331,6 +1331,36 @@ pub fn start_option_status_sync() {
     let _sender = SENDER.lock().unwrap();
 }
 
+/// Runtime of this UI process's long-lived IPC status loop
+/// (`check_connect_status_` started through `SENDER`). Set once by that loop.
+#[cfg(all(
+    feature = "remote_hub",
+    not(any(target_os = "android", target_os = "ios"))
+))]
+static UI_RUNTIME: std::sync::OnceLock<tokio::runtime::Handle> = std::sync::OnceLock::new();
+
+/// Handle of the runtime that already runs this UI process's IPC status
+/// loop, for FFI calls that must run async work without creating a runtime.
+/// Starts the loop if needed and waits up to `wait` for it to come up.
+#[cfg(all(
+    feature = "remote_hub",
+    not(any(target_os = "android", target_os = "ios"))
+))]
+pub fn ui_runtime(wait: std::time::Duration) -> Option<tokio::runtime::Handle> {
+    start_option_status_sync();
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        if let Some(handle) = UI_RUNTIME.get() {
+            return Some(handle.clone());
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        // Sync caller (an FFI worker thread), not async code.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 // not call directly
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn check_connect_status(reconnect: bool) -> mpsc::UnboundedSender<ipc::Data> {
@@ -1406,6 +1436,11 @@ async fn check_connect_status_(reconnect: bool, rx: mpsc::UnboundedReceiver<ipc:
     #[cfg(not(feature = "flutter"))]
     let mut id = "".to_owned();
     let is_cm = crate::common::is_cm();
+    #[cfg(feature = "remote_hub")]
+    if reconnect {
+        // Only the reconnecting loop lives as long as the process.
+        let _ = UI_RUNTIME.set(tokio::runtime::Handle::current());
+    }
 
     loop {
         if let Ok(mut c) = ipc::connect(1000, "").await {
@@ -1467,6 +1502,10 @@ async fn check_connect_status_(reconnect: bool, rx: mpsc::UnboundedReceiver<ipc:
                             Ok(Some(ipc::Data::ControlPermissionsRemoteModify(v))) => {
                                 *IS_REMOTE_MODIFY_ENABLED_BY_CONTROL_PERMISSIONS.lock().unwrap() = v;
                             }
+                            #[cfg(feature = "remote_hub")]
+                            Ok(Some(ipc::Data::RemoteHubListener(Some(state)))) => {
+                                crate::remote_hub::note_service_listener(Some(&state));
+                            }
                             #[cfg(target_os = "windows")]
                             Ok(Some(ipc::Data::FileTransferEnabledState(v))) => {
                                 if let Some(enabled) = v {
@@ -1491,12 +1530,16 @@ async fn check_connect_status_(reconnect: bool, rx: mpsc::UnboundedReceiver<ipc:
                         #[cfg(feature = "flutter")]
                         c.send(&ipc::Data::VideoConnCount(None)).await.ok();
                         c.send(&ipc::Data::ControlPermissionsRemoteModify(None)).await.ok();
+                        #[cfg(feature = "remote_hub")]
+                        c.send(&ipc::Data::RemoteHubListener(None)).await.ok();
                         #[cfg(target_os = "windows")]
                         c.send(&ipc::Data::FileTransferEnabledState(None)).await.ok();
                     }
                 }
             }
         }
+        #[cfg(feature = "remote_hub")]
+        crate::remote_hub::note_service_listener(None);
         if !reconnect {
             OPTIONS
                 .lock()

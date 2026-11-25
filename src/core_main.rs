@@ -180,6 +180,9 @@ pub fn core_main() -> Option<CoreMainAction> {
             log_name = name;
         }
     }
+    #[cfg(feature = "remote_hub")]
+    crate::remote_hub::init_log(&log_name);
+    #[cfg(not(feature = "remote_hub"))]
     hbb_common::init_log(false, &log_name);
 
     // linux uni (url) go here.

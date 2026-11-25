@@ -702,6 +702,10 @@ impl Drop for CheckTestNatType {
 }
 
 pub fn test_nat_type() {
+    #[cfg(feature = "remote_hub")]
+    if crate::remote_hub::is_active() {
+        return;
+    }
     test_ipv6_sync();
     use std::sync::atomic::{AtomicBool, Ordering};
     std::thread::spawn(move || {
@@ -879,6 +883,10 @@ async fn test_rendezvous_server_() {
 }
 
 pub fn test_rendezvous_server() {
+    #[cfg(feature = "remote_hub")]
+    if crate::remote_hub::is_active() {
+        return;
+    }
     std::thread::spawn(test_rendezvous_server_);
 }
 
@@ -1186,6 +1194,10 @@ fn process_software_update_check_response(bytes: Bytes) -> ResultType<()> {
 // Because the url is always `https://api.rustdesk.com/version/latest`.
 #[tokio::main(flavor = "current_thread")]
 pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
+    #[cfg(feature = "remote_hub")]
+    if crate::remote_hub::is_active() {
+        bail!("{}", crate::remote_hub::NETWORK_DENIED);
+    }
     let (request, url) =
         hbb_common::version_check_request(hbb_common::VER_TYPE_RUSTDESK_CLIENT.to_string());
     let proxy_conf = Config::get_socks();
@@ -1380,6 +1392,12 @@ pub fn get_local_option(key: &str) -> String {
 }
 
 pub fn get_audit_server(api: String, custom: String, typ: String) -> String {
+    // Remote Hub sends nothing outside its TLS bridge (plan 6.3-6.4): no
+    // connection, file or alarm audit records, whatever api-server says.
+    #[cfg(feature = "remote_hub")]
+    if crate::remote_hub::is_active() {
+        return "".to_owned();
+    }
     let url = get_api_server(api, custom);
     if url.is_empty() || is_public(&url) {
         return "".to_owned();
@@ -1478,6 +1496,8 @@ async fn tcp_proxy_request(
     body: &[u8],
     headers: Vec<HeaderEntry>,
 ) -> ResultType<HttpProxyResponse> {
+    #[cfg(feature = "remote_hub")]
+    crate::remote_hub::deny_network()?;
     let tcp_addr = get_tcp_proxy_addr();
     if tcp_addr.is_empty() {
         bail!("No rendezvous server configured for TCP proxy");
@@ -1689,6 +1709,10 @@ where
 /// - 4xx responses are returned as-is (server is reachable, business logic error).
 /// - If fallback also fails, returns the original HTTP result (text or error).
 pub async fn post_request(url: String, body: String, header: &str) -> ResultType<String> {
+    #[cfg(feature = "remote_hub")]
+    if crate::remote_hub::is_active() {
+        bail!("{}", crate::remote_hub::NETWORK_DENIED);
+    }
     with_tcp_proxy_fallback(
         &url,
         "POST",
@@ -1723,6 +1747,10 @@ pub async fn post_request_with_status(
     body: String,
     header: &str,
 ) -> ResultType<(u16, String)> {
+    #[cfg(feature = "remote_hub")]
+    if crate::remote_hub::is_active() {
+        bail!("{}", crate::remote_hub::NETWORK_DENIED);
+    }
     if should_use_raw_tcp_for_api(&url) {
         return post_request_via_tcp_proxy_status(&url, &body, header).await;
     }
@@ -2014,6 +2042,8 @@ pub async fn http_request_sync(
     body: Option<String>,
     header: String,
 ) -> ResultType<String> {
+    #[cfg(feature = "remote_hub")]
+    crate::remote_hub::deny_network()?;
     with_tcp_proxy_fallback(
         &url,
         &method,
@@ -2515,7 +2545,19 @@ pub fn rustdesk_interval(i: Interval) -> ThrottledInterval {
     ThrottledInterval::new(i)
 }
 
+/// Starts the file logger of a separate executable (the macOS `service`):
+/// in a Remote Hub build with Remote Hub's rotation and age pruning, as the
+/// main executable gets in `core_main`.
+pub fn init_executable_log(name: &str) {
+    #[cfg(feature = "remote_hub")]
+    crate::remote_hub::init_log(name);
+    #[cfg(not(feature = "remote_hub"))]
+    hbb_common::init_log(false, name);
+}
+
 pub fn load_custom_client() {
+    #[cfg(feature = "remote_hub")]
+    crate::remote_hub::apply_app_identity();
     #[cfg(debug_assertions)]
     if let Ok(data) = std::fs::read_to_string("./custom.txt") {
         read_custom_client(data.trim());
@@ -3654,5 +3696,95 @@ mod tests {
         // `decode_id_pk` is the same blob minus the fingerprint, so the field is invisible to
         // non-WebRTC handshakes.
         assert_eq!(decode_id_pk(&signed, &pk).unwrap(), (id, their_pk));
+    }
+    /// The general HTTP FFI (`main_http_request`) reaches `http_request_sync`
+    /// with any URL; the TLS probe, the strict download/update clients and
+    /// the recording upload are the other ways out. None may dial anything.
+    #[cfg(feature = "remote_hub")]
+    #[test]
+    fn test_remote_hub_denies_every_http_entry_point() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{addr}/api/anything");
+        for method in ["GET", "POST", "PUT", "DELETE"] {
+            let err = http_request_sync(url.clone(), method.to_owned(), None, "{}".to_owned())
+                .unwrap_err();
+            assert!(
+                err.to_string().contains(crate::remote_hub::NETWORK_DENIED),
+                "{method}: {err}"
+            );
+        }
+        let err = post_request_sync(url.clone(), "{}".to_owned(), "").unwrap_err();
+        assert!(err.to_string().contains(crate::remote_hub::NETWORK_DENIED));
+        let https = format!("https://{addr}/file");
+        let err = crate::hbbs_http::create_http_client_with_url_strict(&https).unwrap_err();
+        assert!(err.to_string().contains(crate::remote_hub::NETWORK_DENIED));
+        let rt = hbb_common::tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let err = rt
+            .block_on(crate::hbbs_http::create_http_client_async_with_url_strict(
+                &https,
+            ))
+            .unwrap_err();
+        assert!(err.to_string().contains(crate::remote_hub::NETWORK_DENIED));
+        // The non-strict constructors probe the server with HEAD; not here.
+        let _ = crate::hbbs_http::create_http_client_with_url(&url);
+        assert!(!crate::hbbs_http::record_upload::is_enable());
+        // The FFI entry point stores the denial as the request's result.
+        crate::ui_interface::http_request(url.clone(), "GET".to_owned(), None, "{}".to_owned());
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let status = crate::ui_interface::get_async_http_status(url.clone());
+            if let Some(text) = status.filter(|t| t.trim() != "") {
+                assert!(text.contains(crate::remote_hub::NETWORK_DENIED), "{text}");
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "no result");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+            "nothing may dial the local server"
+        );
+    }
+
+    /// Host connections run the upstream audit path; with a private
+    /// api-server configured it used to post the host ID, UUID and
+    /// connection data outside the Remote Hub bridge (plan 6.3-6.4).
+    #[cfg(feature = "remote_hub")]
+    #[tokio::test]
+    async fn test_remote_hub_sends_no_audit_records() {
+        let listener = hbb_common::tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let api = format!("http://{}", listener.local_addr().unwrap());
+        for typ in ["conn", "file", "alarm"] {
+            assert_eq!(
+                get_audit_server(api.clone(), "".to_owned(), typ.to_owned()),
+                "",
+                "{typ} audit must be off"
+            );
+        }
+        assert_eq!(
+            get_audit_server("".to_owned(), "10.1.2.3".to_owned(), "conn".to_owned()),
+            ""
+        );
+        let url = format!("{api}/api/audit/conn");
+        let err = post_request_with_status(url.clone(), "{}".to_owned(), "")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains(crate::remote_hub::NETWORK_DENIED));
+        let err = post_request(url, "{}".to_owned(), "").await.unwrap_err();
+        assert!(err.to_string().contains(crate::remote_hub::NETWORK_DENIED));
+        // Nothing dialed the audit endpoint.
+        assert!(
+            hbb_common::tokio::time::timeout(Duration::from_millis(200), listener.accept())
+                .await
+                .is_err()
+        );
     }
 }

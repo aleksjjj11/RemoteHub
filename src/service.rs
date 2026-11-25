@@ -14,6 +14,6 @@ fn main() {
         }
         std::process::exit(0);
     }
-    hbb_common::init_log(false, "service");
+    crate::common::init_executable_log("service");
     crate::start_os_service();
 }

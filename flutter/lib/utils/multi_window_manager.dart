@@ -8,6 +8,8 @@ import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/main.dart';
 import 'package:flutter_hbb/models/input_model.dart';
+import 'package:flutter_hbb/remote_hub/remote_hub_build.dart';
+import 'package:flutter_hbb/remote_hub/sessions/viewer_close.dart';
 
 /// must keep the order
 // ignore: constant_identifier_names
@@ -279,16 +281,20 @@ class RustDeskMultiWindowManager {
     String? switchUuid,
     bool? forceRelay,
   }) async {
-    return await newSession(
-      WindowType.RemoteDesktop,
-      kWindowEventNewRemoteDesktop,
+    // Remote Hub: tracks the viewer being opened; only opens it without.
+    return await _remoteHubViewers.track(
       remoteId,
-      _remoteDesktopWindows,
-      password: password,
-      loginMethod: loginMethod,
-      forceRelay: forceRelay,
-      switchUuid: switchUuid,
-      isSharedPassword: isSharedPassword,
+      () => newSession(
+        WindowType.RemoteDesktop,
+        kWindowEventNewRemoteDesktop,
+        remoteId,
+        _remoteDesktopWindows,
+        password: password,
+        loginMethod: loginMethod,
+        forceRelay: forceRelay,
+        switchUuid: switchUuid,
+        isSharedPassword: isSharedPassword,
+      ),
     );
   }
 
@@ -464,6 +470,39 @@ class RustDeskMultiWindowManager {
       Future<dynamic> Function(MethodCall call, int fromWindowId)? handler) {
     DesktopMultiWindow.setMethodHandler(handler);
   }
+
+  /// Remote Hub: closes the tab of [peerId] in every remote desktop window,
+  /// which ends its session. Used when the owner cancels a connect.
+  ///
+  /// The viewer window is registered before its tab exists, so this keeps
+  /// trying until a tab was closed, unless a newer connect of the same peer
+  /// started meanwhile (see [newRemoteDesktop]).
+  Future<bool> closeRemoteDesktopSession(String peerId) async {
+    final generation = _remoteHubViewers.generations.current(peerId);
+    return closeViewerWhenItAppears(
+      superseded: () =>
+          _remoteHubViewers.generations.current(peerId) != generation,
+      tryClose: () async =>
+          await closeOpenRemoteDesktopSession(peerId) ==
+          ViewerCloseResult.closed,
+    );
+  }
+
+  /// Closes the remote desktop tab of [peerId] if one is open now, without
+  /// waiting for one to appear. [ViewerCloseResult.unconfirmed] when a
+  /// window did not answer (a new window answers only once its tab exists)
+  /// or a viewer of [peerId] is still being opened.
+  Future<ViewerCloseResult> closeOpenRemoteDesktopSession(String peerId) =>
+      closeInWindows(
+        windows: _remoteDesktopWindows,
+        opening: _remoteHubViewers.isOpening(peerId),
+        invoke: (windowId) => DesktopMultiWindow.invokeMethod(
+            windowId, kWindowEventRemoteHubCloseSession, peerId),
+        onError: (windowId, e) =>
+            debugPrint('Failed to close session in window $windowId: $e'),
+      );
+
+  final _remoteHubViewers = ViewerTracker(enabled: kRemoteHub);
 
   Future<void> closeAllSubWindows() async {
     await Future.wait(WindowType.values.map((e) => _closeWindows(e)));

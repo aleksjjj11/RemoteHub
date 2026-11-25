@@ -1,0 +1,58 @@
+# Remote Hub device inventory template (plan section 4.2).
+# Copy to config/inventory.local.yaml (git-ignored) and fill in real values.
+# Leave null where a fact is unknown; do not guess.
+schema_version: 1
+owner_count: 1
+tailnet:
+  magicdns_enabled: null
+  https_certificates_enabled: null
+  access_policy_reviewed: false
+
+devices:
+  - id: controller-pixel
+    role: controller
+    platform: android
+    model: Google Pixel 6
+    architecture: null
+    os_version: null
+    tailscale_ip: null
+
+  - id: controller-mac
+    role: controller
+    platform: macos
+    architecture: null
+    os_version: null
+    tailscale_ip: null
+
+  - id: host-mac-a
+    role: host
+    platform: macos
+    architecture: null
+    os_version: null
+    tailscale_ip: null
+    tls_server_name: null
+    logged_in_access_tested: false
+    locked_access_tested: false
+    after_reboot_access_tested: false
+
+  - id: host-mac-b
+    role: host
+    platform: macos
+    architecture: null
+    os_version: null
+    tailscale_ip: null
+    tls_server_name: null
+    logged_in_access_tested: false
+    locked_access_tested: false
+    after_reboot_access_tested: false
+
+  - id: host-windows
+    role: host
+    platform: windows
+    architecture: null
+    os_version: null
+    tailscale_ip: null
+    tls_server_name: null
+    logged_in_access_tested: false
+    locked_access_tested: false
+    after_reboot_access_tested: false

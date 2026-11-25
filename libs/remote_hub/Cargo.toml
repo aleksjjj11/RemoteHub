@@ -1,0 +1,30 @@
+[package]
+name = "remote_hub"
+version = "0.1.0"
+edition = "2021"
+description = "Remote Hub tailnet-only policy and TLS bridge"
+license = "AGPL-3.0"
+
+# Remote Hub specific native code (see NOTICE-REMOTE-HUB.md). Kept out of
+# hbb_common so the shared submodule does not change, and with a small
+# dependency set so it can be tested without the full RustDesk build.
+
+[dependencies]
+log = "0.4"
+tokio = { version = "1.44", features = ["net", "io-util", "time", "rt", "sync", "macros"] }
+tokio-rustls = { version = "0.26", features = [
+    "logging",
+    "tls12",
+    "ring",
+], default-features = false }
+webpki-roots = "1.0.4"
+rcgen = { version = "0.13", optional = true }
+
+[features]
+# Test CA and a Serve stand-in for dependents' tests. Enable only as a
+# dev-dependency feature: it must never be part of a release build.
+test-support = ["dep:rcgen"]
+
+[dev-dependencies]
+rcgen = "0.13"
+tokio = { version = "1.44", features = ["full"] }

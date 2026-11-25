@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/common/shared_state.dart';
 import 'package:flutter_hbb/consts.dart';
+import 'package:flutter_hbb/remote_hub/remote_hub_build.dart';
 import 'package:flutter_hbb/models/input_model.dart';
 import 'package:flutter_hbb/models/state_model.dart';
 import 'package:flutter_hbb/desktop/pages/remote_page.dart';
@@ -491,6 +492,13 @@ class _ConnectionTabPageState extends State<ConnectionTabPage> {
         windowOnTop(windowId());
       }
       return jumpOk;
+    } else if (kRemoteHub &&
+        call.method == kWindowEventRemoteHubCloseSession) {
+      // Remote Hub: the owner cancelled this connect in the main window.
+      final id = call.arguments as String;
+      final open = tabController.state.value.tabs.any((e) => e.key == id);
+      if (open) tabController.closeBy(id);
+      return open;
     } else if (call.method == kWindowEventActiveDisplaySession) {
       final args = jsonDecode(call.arguments);
       final id = args['id'];

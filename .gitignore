@@ -60,3 +60,5 @@ flutter/web/
 /third_party/libdrmtap/
 # Local git worktrees
 .worktrees/
+# Remote Hub: owner-specific inventory, never committed
+config/inventory.local.yaml

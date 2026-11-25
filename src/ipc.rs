@@ -378,6 +378,29 @@ pub enum Data {
     SAS,
     UserSid(Option<u32>),
     OnlineStatus(Option<(i64, bool)>),
+    /// Remote Hub: the host listener's own state, answered by the process
+    /// that runs it (`remote_hub::ListenerState::as_str`).
+    #[cfg(feature = "remote_hub")]
+    RemoteHubListener(Option<String>),
+    /// Remote Hub: the UI asks the host service to stop or allow access.
+    #[cfg(feature = "remote_hub")]
+    RemoteHubSetAccess(bool),
+    /// Answer to `RemoteHubSetAccess`: "" once the listener applied it (on
+    /// stop: closed and every session ended), else what failed.
+    #[cfg(feature = "remote_hub")]
+    RemoteHubAccessResult(String),
+    /// The UI received a successful answer to an allow. Without it the
+    /// service stops access again (`remote_hub::serve_access_request`).
+    #[cfg(feature = "remote_hub")]
+    RemoteHubAccessCommit,
+    /// Remote Hub: a host panel takes, renews or ends its lease on showing a
+    /// new password, kept by the process that holds the host listener so an
+    /// allow from any app process sees it (`remote_hub::serve_password_display`).
+    #[cfg(feature = "remote_hub")]
+    RemoteHubPasswordDisplay(crate::remote_hub::PasswordDisplayOp),
+    /// Answer to `RemoteHubPasswordDisplay`.
+    #[cfg(feature = "remote_hub")]
+    RemoteHubPasswordDisplayResult(i64),
     Config((String, Option<String>)),
     Options(Option<HashMap<String, String>>),
     NatType(Option<i32>),
@@ -907,6 +930,23 @@ async fn handle(data: Data, stream: &mut Connection) {
                 }
                 std::process::exit(-1); // to make sure --server luauchagent process can restart because SuccessfulExit used
             }
+        }
+        #[cfg(feature = "remote_hub")]
+        Data::RemoteHubListener(None) => {
+            let state = crate::remote_hub::listener_state_for_ipc().as_str();
+            allow_err!(
+                stream
+                    .send(&Data::RemoteHubListener(Some(state.to_owned())))
+                    .await
+            );
+        }
+        #[cfg(feature = "remote_hub")]
+        Data::RemoteHubSetAccess(enabled) => {
+            crate::remote_hub::serve_access_request(stream, enabled).await;
+        }
+        #[cfg(feature = "remote_hub")]
+        Data::RemoteHubPasswordDisplay(op) => {
+            crate::remote_hub::serve_password_display(stream, op).await;
         }
         Data::OnlineStatus(_) => {
             let x = config::get_online_state();

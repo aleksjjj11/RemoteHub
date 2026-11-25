@@ -236,3 +236,22 @@ Then translate that source into the file's target language (infer the language f
 * New English-text keys use sentence case, not Title Case: `Use ID whitelisting`, **not** `Use ID Whitelisting`. Acronyms (ID, IP, 2FA…) stay uppercase. Legacy Title-Case keys (e.g. `Use IP Whitelisting`) stay as-is — do not rename them.
 * Since the key itself is the English display text, a sentence-case key usually needs **no** `en.rs` entry; add one only when the display text must differ from the key (e.g. `*_tip` keys).
 * Append each new key to `template.rs` (with `""`) and to every `src/lang/*.rs` file (translated, or `""` if unsure; always `""` for `it.rs`), at the end of the list.
+
+## Remote Hub
+
+This fork is Remote Hub, a personal tailnet-only build of RustDesk. Before working on it read
+`IMPLEMENTATION_STATUS.md`, `TASKS.md` and `docs/decisions/`.
+
+* Remote Hub logic goes in `libs/remote_hub` (Rust) and `flutter/lib/remote_hub` (Dart). Existing
+  RustDesk files get thin hooks only (see `src/remote_hub.rs`), each behind the cargo feature
+  `remote_hub` (Dart: `kRemoteHub`, set by `--dart-define=REMOTE_HUB=true`). Without the feature the
+  upstream code runs unchanged.
+* Build only through `tools/build-*.sh` / `tools/build-windows.ps1`, which follow
+  `config/build-lock.json`; they stage the sources and never modify the repository.
+* Never add a path that dials a host without the verified TLS bridge, binds the host listener
+  outside `127.0.0.1:22118`, or falls back to RustDesk rendezvous/relay servers.
+* Never weaken certificate verification, not even in tests: test TLS uses an in-memory test CA
+  passed to private constructors.
+* Report checks factually: mark device and build checks you did not run as `NOT_RUN` in
+  `IMPLEMENTATION_STATUS.md`.
+* Never commit `config/inventory.local.yaml`, passwords, signing keys or screen captures.

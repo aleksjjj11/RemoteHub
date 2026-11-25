@@ -9,6 +9,7 @@ import 'package:flutter_hbb/mobile/widgets/floating_mouse.dart';
 import 'package:flutter_hbb/mobile/widgets/floating_mouse_widgets.dart';
 import 'package:flutter_hbb/mobile/widgets/gesture_help.dart';
 import 'package:flutter_hbb/models/chat_model.dart';
+import 'package:flutter_hbb/remote_hub/remote_hub_build.dart';
 import 'package:flutter_keyboard_visibility/flutter_keyboard_visibility.dart';
 import 'package:flutter_svg/svg.dart';
 import 'package:get/get.dart';
@@ -953,7 +954,11 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
               onTouchModeChange: (t) {
                 gFFI.ffiModel.toggleTouchMode();
                 final v = gFFI.ffiModel.touchMode ? 'Y' : 'N';
-                bind.mainSetLocalOption(key: kOptionTouchMode, value: v);
+                // Remote Hub: the device's saved input mode decides each
+                // connect; a change here applies to this session only.
+                if (!kRemoteHub) {
+                  bind.mainSetLocalOption(key: kOptionTouchMode, value: v);
+                }
               },
               virtualMouseMode: gFFI.ffiModel.virtualMouseMode,
               inputModel: gFFI.inputModel,

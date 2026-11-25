@@ -433,6 +433,14 @@ impl Client {
         (i32, String),
         bool,
     )> {
+        #[cfg(feature = "remote_hub")]
+        if crate::remote_hub::is_active() {
+            return Ok((
+                (crate::remote_hub::dial(peer).await?, true, None, None, "TCP"),
+                (0, "".to_owned()),
+                false,
+            ));
+        }
         if config::is_incoming_only() && !is_switch_sides_back(conn_type, &interface).await {
             bail!("Incoming only mode");
         }
@@ -2961,6 +2969,13 @@ impl LoginConfigHandler {
             log::warn!("Failed to initialize login method: {}", login_method);
         }
         let config = self.load_config();
+        // Remote Hub never reuses a password hash an older file left in peer
+        // config; the next accepted login removes it from the file.
+        #[cfg(feature = "remote_hub")]
+        let config = PeerConfig {
+            password: Default::default(),
+            ..config
+        };
         self.remember = !config.password.is_empty();
         self.config = config;
 
@@ -3658,6 +3673,17 @@ impl LoginConfigHandler {
         };
     }
 
+    /// Remote Hub keeps passwords only in the OS vault: peer config never
+    /// keeps a reusable password hash, whatever its source (remembered,
+    /// personal address book) and whatever an older file held.
+    #[cfg(feature = "remote_hub")]
+    fn remote_hub_clear_peer_config_password(&self, config: &mut PeerConfig) {
+        if !config.password.is_empty() {
+            log::debug!("remove password of {}", self.id);
+        }
+        config.password = Default::default();
+    }
+
     /// Handle peer info.
     ///
     /// # Arguments
@@ -3665,6 +3691,9 @@ impl LoginConfigHandler {
     /// * `username` - The name of the peer.
     /// * `pi` - The peer info.
     pub fn handle_peer_info(&mut self, pi: &PeerInfo) {
+        // Peer info is the host's answer to an accepted login.
+        #[cfg(feature = "remote_hub")]
+        crate::remote_hub::note_login_accepted(&self.id, &self.hash.salt, &self.password);
         if !pi.version.is_empty() {
             self.version = hbb_common::get_version_number(&pi.version);
         }
@@ -3700,6 +3729,8 @@ impl LoginConfigHandler {
                 log::debug!("remove password of {}", self.id);
             }
         }
+        #[cfg(feature = "remote_hub")]
+        self.remote_hub_clear_peer_config_password(&mut config);
         if let Some((_, b, c)) = self.other_server.as_ref() {
             if b != PUBLIC_SERVER {
                 config
@@ -3870,6 +3901,10 @@ impl LoginConfigHandler {
             avatar,
             ..Default::default()
         };
+        #[cfg(feature = "remote_hub")]
+        if let Some(username) = crate::remote_hub::login_username(&self.id) {
+            lr.username = username;
+        }
         if self.skips_saved_password() {
             lr.password.clear();
         }
@@ -4728,6 +4763,7 @@ pub async fn handle_hash(
         }
     }
     // personal ab password
+    #[cfg(not(feature = "remote_hub"))]
     if password.is_empty() {
         try_get_password_from_personal_ab(lc.clone(), &mut password);
     }
@@ -4802,6 +4838,8 @@ pub async fn handle_hash(
 }
 
 #[inline]
+// Remote Hub keeps passwords only in the OS vault: no address-book hash.
+#[cfg(not(feature = "remote_hub"))]
 fn try_get_password_from_personal_ab(lc: Arc<RwLock<LoginConfigHandler>>, password: &mut Vec<u8>) {
     let access_token = LocalConfig::get_option("access_token");
     let ab = config::Ab::load();
@@ -5229,6 +5267,12 @@ lazy_static::lazy_static! {
 /// * `text` - The text of the message.
 #[inline]
 pub fn check_if_retry(msgtype: &str, title: &str, text: &str, retry_for_relay: bool) -> bool {
+    #[cfg(feature = "remote_hub")]
+    if crate::remote_hub::is_active() {
+        if let Some(retry) = crate::remote_hub::retry_decision(text) {
+            return retry && msgtype == "error" && title == "Connection Error";
+        }
+    }
     msgtype == "error"
         && title == "Connection Error"
         && ((text.contains("10054") || text.contains("104")) && retry_for_relay
@@ -5260,6 +5304,54 @@ mod retry_tests {
             "Incoming only mode",
             false,
         ));
+    }
+
+    #[cfg(feature = "remote_hub")]
+    #[test]
+    fn remote_hub_refused_endpoint_retries_but_tls_failure_does_not() {
+        assert!(check_if_retry(
+            "error",
+            "Connection Error",
+            "ENDPOINT_UNREACHABLE: TCP connect failed: ConnectionRefused",
+            false,
+        ));
+        assert!(!check_if_retry(
+            "error",
+            "Connection Error",
+            "TLS_HANDSHAKE_FAILED: handshake failed",
+            false,
+        ));
+    }
+
+    /// Review finding: with `remember` off, the personal-address-book branch
+    /// still wrote the reusable password hash into peer config.
+    #[cfg(feature = "remote_hub")]
+    #[test]
+    fn remote_hub_never_keeps_a_password_in_peer_config() {
+        use super::{LoginConfigHandler, PasswordSource, PeerConfig};
+        let hash = vec![7u8; 32];
+        let cases = [
+            // remembered login
+            (true, PasswordSource::Undefined, Vec::new()),
+            // personal address book password
+            (false, PasswordSource::PersonalAb(hash.clone()), Vec::new()),
+            // a hash an older file kept
+            (false, PasswordSource::Undefined, vec![9u8; 32]),
+        ];
+        for (remember, source, stored) in cases {
+            let mut lc = LoginConfigHandler::default();
+            lc.id = "123456789".to_owned();
+            lc.password = hash.clone();
+            lc.remember = remember;
+            lc.password_source = source.clone();
+            let mut config = PeerConfig::default();
+            config.password = stored;
+            lc.remote_hub_clear_peer_config_password(&mut config);
+            assert!(
+                config.password.is_empty(),
+                "remember={remember} source={source:?}"
+            );
+        }
     }
 }
 
@@ -5385,6 +5477,10 @@ pub mod peer_online {
         ids: &Vec<String>,
         timeout: std::time::Duration,
     ) -> ResultType<(Vec<String>, Vec<String>)> {
+        #[cfg(feature = "remote_hub")]
+        if crate::remote_hub::is_active() {
+            bail!("{}", crate::remote_hub::NETWORK_DENIED);
+        }
         let mut msg_out = RendezvousMessage::new();
         msg_out.set_online_request(OnlineRequest {
             id: Config::get_id(),

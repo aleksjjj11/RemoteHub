@@ -1576,6 +1576,76 @@ class RustdeskImpl {
     throw UnimplementedError("mainIsInstalled");
   }
 
+  // Remote Hub has no web target: the web client is never a Remote Hub build.
+  bool remoteHubIsBuild({dynamic hint}) {
+    return false;
+  }
+
+  String remoteHubRegisterDevice(
+      {required String id,
+      required String tailnetIpv4,
+      required String tlsServerName,
+      dynamic hint}) {
+    return 'NATIVE_LIBRARY_UNAVAILABLE: not a Remote Hub build';
+  }
+
+  String remoteHubVerifiedServerName({required String id, dynamic hint}) {
+    return '';
+  }
+
+  bool remoteHubLoginAccepted(
+      {required String id, required String password, dynamic hint}) {
+    return false;
+  }
+
+  bool remoteHubLoginDone({required String id, dynamic hint}) {
+    return false;
+  }
+
+  String remoteHubDeleteLogs({dynamic hint}) {
+    return 'NATIVE_LIBRARY_UNAVAILABLE: not a Remote Hub build';
+  }
+
+  String remoteHubApplyViewerPreferences(
+      {required String id,
+      required String quality,
+      required String inputMode,
+      required String displayId,
+      dynamic hint}) {
+    return 'NATIVE_LIBRARY_UNAVAILABLE: not a Remote Hub build';
+  }
+
+  String remoteHubDialStage({required String id, dynamic hint}) {
+    return '';
+  }
+
+  void remoteHubStagePassword(
+      {required String id, required String password, dynamic hint}) {}
+
+  String remoteHubHostStatus({dynamic hint}) {
+    return '{}';
+  }
+
+  Future<String> remoteHubSetHostAccess(
+      {required bool enabled, dynamic hint}) {
+    return Future.value('NATIVE_LIBRARY_UNAVAILABLE: not a Remote Hub build');
+  }
+
+  Future<String> remoteHubSetHostOptions(
+      {required String optionsJson, dynamic hint}) {
+    return Future.value('NATIVE_LIBRARY_UNAVAILABLE: not a Remote Hub build');
+  }
+
+  int remoteHubBeginPasswordDisplay({dynamic hint}) {
+    return 0;
+  }
+
+  bool remoteHubRenewPasswordDisplay({required int lease, dynamic hint}) {
+    return false;
+  }
+
+  void remoteHubEndPasswordDisplay({required int lease, dynamic hint}) {}
+
   bool mainIsInstalledLowerVersion({dynamic hint}) {
     throw UnimplementedError("mainIsInstalledLowerVersion");
   }

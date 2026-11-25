@@ -17,6 +17,8 @@ mod client;
 mod lan;
 #[cfg(not(any(target_os = "ios")))]
 mod rendezvous_mediator;
+#[cfg(feature = "remote_hub")]
+mod remote_hub;
 #[cfg(not(any(target_os = "ios")))]
 pub use self::rendezvous_mediator::*;
 /// cbindgen:ignore
